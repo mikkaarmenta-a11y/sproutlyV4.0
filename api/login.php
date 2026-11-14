@@ -178,8 +178,8 @@ layout_start($mode === 'register' ? 'Create Account' : 'Login'); ?>
           <div class="mb-3">
             <label class="form-label" for="reg_role">Requested role</label>
             <select id="reg_role" name="role_id" class="form-select auth-input-php <?= isset($errors['role_id']) ? 'is-invalid' : '' ?>">
-              <option value="2" <?= ($_POST['role_id'] ?? '2') === '2' ? 'selected' : '' ?>>Staff (Read &amp; Filter)</option>
-              <option value="1" <?= ($_POST['role_id'] ?? '') === '1' ? 'selected' : '' ?>>Administrator (Full CRUD)</option>
+              <option value="2" <?= ($_POST['role_id'] ?? '2') === '2' ? 'selected' : '' ?>>Staff (View, Add &amp; Edit)</option>
+              <option value="1" <?= ($_POST['role_id'] ?? '') === '1' ? 'selected' : '' ?>>Administrator (Full access incl. Delete)</option>
             </select>
             <?php if (isset($errors['role_id'])): ?><div class="invalid-feedback d-block"><?= e($errors['role_id']) ?></div><?php endif; ?>
           </div>

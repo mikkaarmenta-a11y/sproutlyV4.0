@@ -67,6 +67,9 @@ const ROLE_ADMIN = 1, ROLE_STAFF = 2, ROLE_SUPER = 3;
 function is_admin(): bool { return in_array((int)(current_user()['role_id'] ?? 0), [ROLE_ADMIN, ROLE_SUPER], true); }
 function is_super_admin(): bool { return (int)(current_user()['role_id'] ?? 0) === ROLE_SUPER; }
 
+/** Who may add and edit records: admins, super admins and staff. Deleting stays admin-only (is_admin()). */
+function can_edit(): bool { return current_user() !== null; }
+
 /** Name as stored in the user_role table. */
 function role_name(int $id): string { return [ROLE_SUPER => 'Super Admin', ROLE_ADMIN => 'Administrator', ROLE_STAFF => 'Staff'][$id] ?? 'Unknown'; }
 
@@ -536,6 +539,38 @@ function layout_end(): void { ?>
 </div>
 <?php endif; ?>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<style>
+.pw-wrap { position: relative; }
+.pw-wrap > input { padding-right: 2.75rem; }
+.pw-wrap input::-ms-reveal, .pw-wrap input::-ms-clear { display: none; }
+.pw-toggle { position: absolute; top: 0; right: 0; height: 100%; width: 2.75rem; display: flex; align-items: center;
+  justify-content: center; border: 0; background: transparent; color: #6c757d; cursor: pointer; padding: 0; }
+.pw-toggle:hover, .pw-toggle:focus-visible { color: #198754; outline: none; }
+</style>
+<script>
+/* Show / hide toggle on every password field */
+(function () {
+  document.querySelectorAll('input[type="password"]').forEach(function (inp) {
+    var wrap = document.createElement('div');
+    wrap.className = 'pw-wrap';
+    inp.parentNode.insertBefore(wrap, inp);
+    wrap.appendChild(inp);
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'pw-toggle';
+    btn.setAttribute('aria-label', 'Show password');
+    btn.innerHTML = '<i class="bi bi-eye"></i>';
+    btn.addEventListener('click', function () {
+      var show = inp.type === 'password';
+      inp.type = show ? 'text' : 'password';
+      btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+      btn.innerHTML = '<i class="bi ' + (show ? 'bi-eye-slash' : 'bi-eye') + '"></i>';
+      inp.focus();
+    });
+    wrap.appendChild(btn);
+  });
+})();
+</script>
 <script>
 document.addEventListener('click', function (ev) {
   const btn = ev.target.closest('[data-delete-id]');
@@ -930,7 +965,7 @@ function run_module(string $key): void
         csrf_check();
         if (!is_admin()) {
             http_response_code(403);
-            flash('danger', 'Access denied. Staff accounts can only read and filter records.');
+            flash('danger', 'Access denied. Only administrators can delete records.');
             redirect($file);
         }
         $delId = (int)($_POST['id'] ?? 0);
@@ -958,9 +993,9 @@ function run_module(string $key): void
 
     if ($isPost && $action === 'save') {
         csrf_check();
-        if (!is_admin()) {
+        if (!can_edit()) {
             http_response_code(403);
-            flash('danger', 'Access denied. Staff accounts can only read and filter records.');
+            flash('danger', 'Access denied. You must be logged in to add or edit records.');
             redirect($file);
         }
         $isNew = $id === null;
@@ -1001,10 +1036,10 @@ function run_module(string $key): void
     }
 
     if ($action === 'add' || $action === 'edit') {
-        if (!is_admin()) {
+        if (!can_edit()) {
             http_response_code(403);
             layout_start('Access denied');
-            echo '<div class="alert alert-danger">Access denied. Staff accounts can only read and filter records. '
+            echo '<div class="alert alert-danger">Access denied. You must be logged in to add or edit records. '
                . '<a href="' . e($file) . '">Back to ' . e($m['title']) . '</a></div>';
             layout_end();
             exit;
@@ -1122,7 +1157,7 @@ function module_view(array $m, ?string $id): void
       <?php endforeach; ?>
     </dl></div>
     <div class="mt-3 d-flex gap-2">
-      <?php if (is_admin()): ?>
+      <?php if (can_edit()): ?>
         <a class="btn btn-success" href="<?= e(purl($file, ['action' => 'edit', 'id' => $id])) ?>"><i class="bi bi-pencil"></i> Edit</a>
       <?php endif; ?>
       <a class="btn btn-outline-secondary" href="<?= e($file) ?>">Back to list</a>
@@ -1177,7 +1212,7 @@ function module_list(array $m): void
     layout_start($m['title']); ?>
     <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
       <h3 class="mb-0"><i class="bi <?= e($m['icon']) ?>"></i> <?= e($m['title']) ?></h3>
-      <?php if (is_admin()): ?>
+      <?php if (can_edit()): ?>
         <a class="btn btn-success" href="<?= e(purl($file, ['action' => 'add'])) ?>"><i class="bi bi-plus-lg"></i> Add new</a>
       <?php endif; ?>
     </div>
@@ -1230,8 +1265,10 @@ function module_list(array $m): void
           <?php foreach ($m['columns'] as $c): $cell = !empty($c[3]) ? $c[2]($r) : e($c[2]($r)); ?><td><?= trim((string)$cell) === '' ? '&mdash;' : $cell ?></td><?php endforeach; ?>
           <td class="text-end text-nowrap">
             <a class="btn btn-sm btn-outline-primary" title="View" href="<?= e(purl($file, ['action' => 'view', 'id' => $rid])) ?>"><i class="bi bi-eye"></i></a>
-            <?php if (is_admin()): ?>
+            <?php if (can_edit()): ?>
               <a class="btn btn-sm btn-outline-success" title="Edit" href="<?= e(purl($file, ['action' => 'edit', 'id' => $rid])) ?>"><i class="bi bi-pencil"></i></a>
+            <?php endif; ?>
+            <?php if (is_admin()): ?>
               <button type="button" class="btn btn-sm btn-outline-danger" title="Delete" data-bs-toggle="modal" data-bs-target="#delModal"
                       data-delete-id="<?= (int)$rid ?>" data-action="<?= e(purl($file, ['action' => 'delete'])) ?>"
                       data-label="<?= e($m['title'] . ' #' . $rid) ?>" data-warn="<?= e($m['cascadeWarn'] ?? '') ?>"><i class="bi bi-trash"></i></button>
