@@ -61,6 +61,22 @@ function csrf_check(): void
 }
 
 function current_user(): ?array { return $_SESSION['user'] ?? null; }
+
+/** Tables whose new records wait for Super Admin approval (Admin and Staff submissions). */
+const GATED_TABLES = ['farmer', 'farm', 'crop', 'planting', 'harvest'];
+
+/** Number of submitted records waiting for the Super Admin. */
+function pending_record_count(): int
+{
+    global $db;
+    $pk = ['farmer' => 'farmer_id', 'farm' => 'farm_id', 'crop' => 'crop_id', 'planting' => 'planting_id', 'harvest' => 'harvest_id'];
+    $n = 0;
+    foreach (GATED_TABLES as $t) {
+        try { $n += (int)$db->select($t, $pk[$t], ['approval_status' => 'eq.pending'], null, 1, 1)['total']; }
+        catch (SupabaseException $ex) {}
+    }
+    return $n;
+}
 const ROLE_ADMIN = 1, ROLE_STAFF = 2, ROLE_SUPER = 3;
 
 /** Admin and Super Admin both have full create / edit / delete access. */
@@ -203,6 +219,8 @@ class Supabase
 {
     /** Tables that use soft deletion (a deleted_at timestamp instead of removing the row). */
     private const SOFT = ['farmer', 'farm', 'crop', 'planting', 'harvest', 'app_user'];
+    /** Tables whose new records must be approved by the Super Admin before they appear. */
+    private const GATED = ['farmer', 'farm', 'crop', 'planting', 'harvest'];
 
     private function request(string $method, string $table, array $query = [], ?array $body = null, array $extra = []): array
     {
@@ -211,6 +229,9 @@ class Supabase
         }
         if ($method === 'GET' && in_array($table, self::SOFT, true) && !isset($query['deleted_at'])) {
             $query['deleted_at'] = 'is.null'; // hide soft-deleted rows from every read
+        }
+        if ($method === 'GET' && in_array($table, self::GATED, true) && !isset($query['approval_status'])) {
+            $query['approval_status'] = 'eq.approved'; // hide pending / declined records from every read
         }
         $url = SUPABASE_URL . '/rest/v1/' . $table;
         if ($query) $url .= '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
@@ -1039,8 +1060,12 @@ function run_module(string $key): void
                 $who = current_user()['username'];
                 if ($isNew) {
                     $data['created_by'] = $who;
+                    $needsApproval = in_array($m['table'], GATED_TABLES, true) && !is_super_admin();
+                    if ($needsApproval) $data['approval_status'] = 'pending';
                     $db->insert($m['table'], $data);
-                    flash('success', 'Record created successfully.');
+                    flash($needsApproval ? 'info' : 'success', $needsApproval
+                        ? 'Record submitted. It will appear in the table once the Super Admin approves it.'
+                        : 'Record created successfully.');
                 } else {
                     $data['updated_by'] = $who;
                     $db->update($m['table'], $m['pk'], $id, $data);
@@ -1226,7 +1251,7 @@ function module_list(array $m): void
 
     $sortable = array_filter(array_column($m['columns'], 1));
     $sort = in_array($_GET['sort'] ?? '', $sortable, true) ? $_GET['sort'] : $m['pk'];
-    $dir = ($_GET['dir'] ?? 'asc') === 'desc' ? 'desc' : 'asc';
+    $dir = isset($_GET['dir']) ? (($_GET['dir'] === 'desc') ? 'desc' : 'asc') : 'desc'; // newest first by default
     $pg = max(1, (int)($_GET['p'] ?? 1));
 
     try {

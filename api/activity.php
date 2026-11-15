@@ -8,7 +8,7 @@ $tables = [
 ];
 $pkOf = ['farmer' => 'farmer_id', 'farm' => 'farm_id', 'crop' => 'crop_id', 'planting' => 'planting_id',
          'harvest' => 'harvest_id', 'app_user' => 'user_id'];
-$views = ['requests' => 'Requests', 'deleted' => 'Deleted', 'updated' => 'Updated', 'all' => 'All activity', 'sessions' => 'Sessions'];
+$views = ['requests' => 'Requests', 'approvals' => 'Approvals', 'deleted' => 'Deleted', 'updated' => 'Updated', 'all' => 'All activity', 'sessions' => 'Sessions'];
 $view = $_GET['view'] ?? 'requests';
 if (!isset($views[$view])) $view = 'deleted';
 $me = current_user()['username'];
@@ -46,6 +46,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             'approved_at' => gmdate('c'), 'updated_by' => $me]);
                 flash('success', 'The request from ' . $u['full_name'] . ' was declined.');
             }
+            if (($_POST['return'] ?? '') === 'dashboard') redirect('index.php');
+        } elseif ($do === 'approve_record' || $do === 'reject_record') {
+            $t = (string)($_POST['table'] ?? '');
+            $id = (int)($_POST['id'] ?? 0);
+            if (!in_array($t, GATED_TABLES, true) || $id <= 0) throw new RuntimeException('Invalid record.');
+            $ok = $do === 'approve_record';
+            $db->update($t, $pkOf[$t], $id, [
+                'approval_status' => $ok ? 'approved' : 'rejected',
+                'approved_by' => $me, 'approved_at' => gmdate('c'), 'updated_by' => $me,
+            ]);
+            flash('success', $ok ? 'Record approved. It now appears in its table.' : 'Record declined. It will not appear in the table.');
             if (($_POST['return'] ?? '') === 'dashboard') redirect('index.php');
         } elseif ($do === 'revert') {
             $logId = (int)($_POST['log_id'] ?? 0);
@@ -115,7 +126,9 @@ $rows = []; $total = 0; $loadErr = '';
 $kids = []; // delete stamp => counts of connected records deleted with it
 $sessions = [];
 $requests = [];
+$approvals = [];
 $pendingCount = 0;
+$pendingRecords = pending_record_count();
 
 try {
     $pendingCount = $db->select('app_user', 'user_id', ['approval_status' => 'eq.pending'], null, 1, 1)['total'];
@@ -126,6 +139,15 @@ try {
         $res = $db->select('app_user', 'user_id,username,full_name,email,role_id,approval_status,created_at,approved_by,approved_at,user_role(role_name)',
                            ['approval_status' => 'in.(pending,rejected)'], 'created_at.desc', $pg, PER_PAGE);
         $requests = $res['data']; $total = $res['total'];
+    } elseif ($view === 'approvals') {
+        foreach ($modules as $mod) {
+            if (!in_array($mod['table'], GATED_TABLES, true)) continue;
+            $r = $db->select($mod['table'], $mod['select'], ['approval_status' => 'in.(pending,rejected)'],
+                             $mod['pk'] . '.desc', 1, 50);
+            foreach ($r['data'] as $row) $approvals[] = ['mod' => $mod, 'row' => $row];
+        }
+        usort($approvals, fn($a, $b) => strcmp((string)($b['row']['created_at'] ?? ''), (string)($a['row']['created_at'] ?? '')));
+        $total = count($approvals);
     } elseif ($view === 'sessions') {
         $res = $db->select('app_session', 'username,full_name,role_name,status,device,ip_address,logged_in_at,last_active_at,expires_at',
                            [], 'last_active_at.desc', $pg, PER_PAGE);
@@ -179,7 +201,7 @@ layout_start('Activity'); ?>
 
 <ul class="nav nav-pills mb-3">
   <?php foreach ($views as $k => $label): ?>
-    <li class="nav-item"><a class="nav-link <?= $view === $k ? 'active' : '' ?>" href="<?= e(purl('activity.php', ['view' => $k])) ?>"><?= e($label) ?><?= $k === 'requests' && $pendingCount > 0 ? ' <span class="badge text-bg-danger">' . (int)$pendingCount . '</span>' : '' ?></a></li>
+    <li class="nav-item"><a class="nav-link <?= $view === $k ? 'active' : '' ?>" href="<?= e(purl('activity.php', ['view' => $k])) ?>"><?= e($label) ?><?= $k === 'requests' && $pendingCount > 0 ? ' <span class="badge text-bg-danger">' . (int)$pendingCount . '</span>' : '' ?><?= $k === 'approvals' && $pendingRecords > 0 ? ' <span class="badge text-bg-danger">' . (int)$pendingRecords . '</span>' : '' ?></a></li>
   <?php endforeach; ?>
 </ul>
 
@@ -220,6 +242,42 @@ layout_start('Activity'); ?>
     </tbody>
   </table></div></div>
 
+<?php elseif ($view === 'approvals'): ?>
+  <p class="text-muted small mb-2">New farmers, farms, crops, planting and harvest records added by Admin or Staff. They stay hidden from the tables until you approve them.</p>
+  <div class="card p-2"><div class="table-responsive"><table class="table table-hover align-middle mb-0">
+    <thead><tr><th>Submitted</th><th>Type</th><th>Details</th><th>Added by</th><th>Status</th><th class="text-end">Actions</th></tr></thead>
+    <tbody>
+    <?php if (!$approvals && !$loadErr): ?><tr><td colspan="6" class="text-center text-muted py-4">Nothing is waiting for approval.</td></tr><?php endif; ?>
+    <?php foreach ($approvals as $a): $mod = $a['mod']; $row = $a['row']; $t = $mod['table']; $rid = (int)$row[$mod['pk']];
+          $isPending = ($row['approval_status'] ?? '') === 'pending';
+          $bits = [];
+          foreach ($mod['columns'] as $c) {
+              if ($c[0] === 'ID' || count($bits) >= 4) continue;
+              $cell = $c[2]($row); $cell = !empty($c[3]) ? trim(strip_tags((string)$cell)) : trim((string)$cell);
+              if ($cell !== '') $bits[] = $c[0] . ': ' . $cell;
+          } ?>
+      <tr>
+        <td class="text-nowrap"><?= e(when_label($row['created_at'] ?? null)) ?></td>
+        <td><strong><?= e($tables[$t][0] ?? $t) ?></strong></td>
+        <td class="small"><?= e(implode(' · ', $bits)) ?></td>
+        <td><?= e($row['created_by'] ?? '—') ?></td>
+        <td><span class="badge text-bg-<?= $isPending ? 'warning' : 'secondary' ?>"><?= $isPending ? 'Waiting for approval' : 'Declined' ?></span>
+          <?php if (!$isPending): ?><div class="small text-muted">by <?= e($row['approved_by'] ?? '?') ?>, <?= e(when_label($row['approved_at'] ?? null)) ?></div><?php endif; ?></td>
+        <td class="text-end text-nowrap">
+          <form method="post" class="d-inline">
+            <?= csrf_field() ?><input type="hidden" name="do" value="approve_record"><input type="hidden" name="table" value="<?= e($t) ?>"><input type="hidden" name="id" value="<?= $rid ?>">
+            <button class="btn btn-sm btn-success"><i class="bi bi-check-lg"></i> Approve</button>
+          </form>
+          <?php if ($isPending): ?>
+            <form method="post" class="d-inline" onsubmit="return confirm('Decline this record? It will not appear in the table.');">
+              <?= csrf_field() ?><input type="hidden" name="do" value="reject_record"><input type="hidden" name="table" value="<?= e($t) ?>"><input type="hidden" name="id" value="<?= $rid ?>">
+              <button class="btn btn-sm btn-outline-danger"><i class="bi bi-x-lg"></i> Decline</button>
+            </form>
+          <?php endif; ?>
+        </td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody></table></div></div>
 <?php elseif ($view !== 'sessions'): ?>
   <form class="card p-3 mb-3" method="get" action="activity.php">
     <input type="hidden" name="view" value="<?= e($view) ?>">

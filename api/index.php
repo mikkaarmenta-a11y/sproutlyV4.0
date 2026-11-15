@@ -21,6 +21,13 @@ function dash_table(array $cols, array $rows, string $empty): void { ?>
 layout_start('Dashboard');
 echo '<h1 class="page-title">Dashboard</h1>';
 
+if (is_super_admin() && ($pendingRecs = pending_record_count()) > 0): ?>
+<div class="alert alert-warning d-flex justify-content-between align-items-center flex-wrap gap-2" role="alert">
+  <span><i class="bi bi-hourglass-split"></i> <strong><?= (int)$pendingRecs ?></strong> new record<?= $pendingRecs === 1 ? '' : 's' ?> waiting for your approval.</span>
+  <a class="btn btn-sm btn-success" href="activity.php?view=approvals">Review</a>
+</div>
+<?php endif;
+
 if (is_super_admin()) {
     try {
         $pend = $db->select('app_user', 'user_id,username,full_name,email,role_id,created_at',
