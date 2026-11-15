@@ -27,9 +27,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 layout_start('Change password'); ?>
-<h3 class="mb-3"><i class="bi bi-key"></i> Change password</h3>
+<div class="form-shell form-shell-sm">
+<h3 class="form-title"><i class="bi bi-key"></i> Change password</h3>
 <?php if (isset($errors['_'])): ?><div class="alert alert-danger"><?= e($errors['_']) ?></div><?php endif; ?>
-<form method="post" class="card p-3 needs-validation" novalidate style="max-width:460px">
+<form method="post" class="card form-card needs-validation" novalidate>
   <?= csrf_field() ?>
   <?php foreach (['current_password' => 'Current password', 'new_password' => 'New password', 'confirm_password' => 'Confirm new password'] as $n => $label): ?>
     <div class="mb-3">
@@ -38,9 +39,10 @@ layout_start('Change password'); ?>
       <?php if (isset($errors[$n])): ?><div class="invalid-feedback d-block"><?= e($errors[$n]) ?></div><?php endif; ?>
     </div>
   <?php endforeach; ?>
-  <div class="d-flex gap-2">
+  <div class="form-actions">
     <button class="btn btn-success"><i class="bi bi-check-lg"></i> Update password</button>
     <a class="btn btn-outline-secondary" href="index.php">Cancel</a>
   </div>
 </form>
+</div>
 <?php layout_end();

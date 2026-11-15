@@ -644,6 +644,8 @@ $REF = [
     'grade'      => ['table' => 'quality_grade', 'id' => 'grade_id', 'label' => 'grade_name'],
     'remarks'    => ['table' => 'harvest_remark', 'id' => 'remark_id', 'label' => 'remark_description'],
     'roles'      => ['table' => 'user_role', 'id' => 'role_id', 'label' => 'role_name'],
+    // roles an account can be GIVEN: the Super Admin may give any role, an Administrator may only create Staff
+    'roles_assign' => ['table' => 'user_role', 'id' => 'role_id', 'label' => 'role_name'],
     'farm'       => ['table' => 'farm', 'id' => 'farm_id', 'label' => 'farm_name'],
     'crop'       => ['table' => 'crop', 'id' => 'crop_id', 'label' => ['crop_name', 'variety']],
     'planting'   => ['table' => 'planting', 'id' => 'planting_id',
@@ -712,6 +714,7 @@ $modules = [
         'title' => 'Crops', 'file' => 'crops.php', 'icon' => 'bi-flower1', 'table' => 'crop', 'pk' => 'crop_id',
         'select' => '*,crop_category(category_name),season(season_name)',
         'search' => ['crop_name', 'variety'],
+        'searchHint' => 'Search by crop name or variety',
         'filters' => [['field' => 'category_id', 'label' => 'Category', 'type' => 'select', 'ref' => 'category'],
                       ['field' => 'season_id', 'label' => 'Recommended season', 'type' => 'select', 'ref' => 'season']],
         'fields' => [
@@ -805,12 +808,14 @@ $modules = [
         'title' => 'Users', 'file' => 'users.php', 'icon' => 'bi-people', 'table' => 'app_user', 'pk' => 'user_id', 'adminOnly' => true,
         'select' => 'user_id,username,full_name,email,role_id,created_at,updated_at,created_by,updated_by,user_role(role_name)',
         'search' => ['username', 'full_name', 'email'],
+        'searchHint' => 'Search by username, full name, or email',
         'filters' => [['field' => 'role_id', 'label' => 'Role', 'type' => 'select', 'ref' => 'roles']],
         'fields' => [
             ['name' => 'username', 'label' => 'Username', 'type' => 'text', 'required' => true, 'max_len' => 50, 'pattern' => '/^[A-Za-z0-9_.-]{3,50}$/', 'hint' => '3-50 letters, numbers, _ . -'],
             ['name' => 'full_name', 'label' => 'Full name', 'type' => 'text', 'required' => true, 'max_len' => 100],
             ['name' => 'email', 'label' => 'Email', 'type' => 'email', 'required' => true, 'max_len' => 100],
-            ['name' => 'role_id', 'label' => 'Role', 'type' => 'select', 'required' => true, 'ref' => 'roles'],
+            ['name' => 'role_id', 'label' => 'Role', 'type' => 'select', 'required' => true, 'ref' => 'roles_assign',
+             'hint' => 'Only the Super Admin can create or change Administrator accounts.'],
             ['name' => 'password', 'label' => 'Password', 'type' => 'password', 'hint' => 'Minimum 6 characters. When editing, leave blank to keep the current password.'],
         ],
         'columns' => [
@@ -852,6 +857,7 @@ function options(string $refKey): array
     $out = [];
     foreach ($db->select($ref['table'], $sel, [], $ref['id'] . '.asc', 1, 1000)['data'] as $row) {
         if ($refKey === 'roles' && (int)$row['role_id'] === ROLE_SUPER && !is_super_admin()) continue;
+        if ($refKey === 'roles_assign' && !is_super_admin() && (int)$row['role_id'] !== ROLE_STAFF) continue;
         $out[(int)$row[$ref['id']]] = isset($ref['labelFn'])
             ? $ref['labelFn']($row)
             : implode(', ', array_map(fn($c) => $row[$c], (array)$ref['label']));
@@ -907,20 +913,33 @@ function collect(array $m, bool $isNew, array &$err): array
     return $d;
 }
 
-/** Only the Super Admin may edit or delete a Super Admin account. */
-function guard_super_target(array $m, string $id): void
+/**
+ * Who may manage whose account (Users page):
+ *   Super Admin  -> everyone
+ *   Administrator -> Staff accounts only (never another Administrator, never a Super Admin)
+ */
+function can_manage_user(int $targetRole): bool
+{
+    return is_super_admin() || $targetRole === ROLE_STAFF;
+}
+
+/** Stops edit / delete of an account the current person is not allowed to manage. */
+function guard_user_target(array $m, string $id): void
 {
     global $db;
     if ($m['table'] !== 'app_user' || is_super_admin()) return;
     try {
-        $t = $db->find('app_user', 'user_id', $id, 'role_id');
+        $t = $db->find('app_user', 'user_id', $id, 'user_id,role_id');
     } catch (SupabaseException $ex) {
-        return;
-    }
-    if ($t && (int)$t['role_id'] === ROLE_SUPER) {
-        flash('danger', 'Access denied. Only the Super Admin can change a Super Admin account.');
+        flash('danger', 'Could not check your permission for this account. Please try again.');
         redirect($m['file']);
     }
+    if (!$t || can_manage_user((int)$t['role_id'])) return;
+    flash('danger', (int)$t['role_id'] === ROLE_SUPER
+        ? 'Access denied. Only the Super Admin can change a Super Admin account.'
+        : 'Access denied. Administrators cannot edit or delete Administrator accounts. Only the Super Admin can '
+          . '(use "Change password" in your user menu for your own account).');
+    redirect($m['file']);
 }
 
 function cascade_summary(string $table, int $id, string $stamp): string
@@ -974,7 +993,7 @@ function run_module(string $key): void
         } elseif ($key === 'users' && $delId === (int)current_user()['user_id']) {
             flash('danger', 'You cannot delete your own account.');
         } else {
-            guard_super_target($m, (string)$delId);
+            guard_user_target($m, (string)$delId);
             try {
                 [$n, $stamp] = $db->delete($m['table'], $m['pk'], $delId, current_user()['username']);
                 if ($n === 0) {
@@ -1004,7 +1023,7 @@ function run_module(string $key): void
             redirect($file);
         }
         $old = $_POST;
-        if (!$isNew) guard_super_target($m, (string)$id);
+        if (!$isNew) guard_user_target($m, (string)$id);
         try {
             $data = collect($m, $isNew, $errors);
             if ($key === 'users' && !$isNew && (int)$id === (int)current_user()['user_id']
@@ -1048,7 +1067,7 @@ function run_module(string $key): void
             flash('danger', 'Record not found.');
             redirect($file);
         }
-        if ($action === 'edit') guard_super_target($m, (string)$id);
+        if ($action === 'edit') guard_user_target($m, (string)$id);
         module_form($m, $action, $id, $errors, $old);
         return;
     }
@@ -1086,11 +1105,12 @@ function module_form(array $m, string $action, ?string $id, array $errors, array
     $val = fn($n) => $old ? ($old[$n] ?? '') : ($row[$n] ?? ($defaults[$n] ?? ''));
 
     layout_start(($action === 'add' ? 'Add ' : 'Edit ') . $m['title']); ?>
-    <h3 class="mb-3"><?= $action === 'add' ? 'Add' : 'Edit' ?> &middot; <?= e($m['title']) ?></h3>
+    <div class="form-shell">
+    <h3 class="form-title"><?= $action === 'add' ? 'Add' : 'Edit' ?> &middot; <?= e($m['title']) ?></h3>
     <?php if (isset($errors['_'])): ?><div class="alert alert-danger"><?= e($errors['_']) ?></div><?php endif; ?>
     <?php if ($errors && !isset($errors['_'])): ?><div class="alert alert-danger">Please fix the highlighted fields below.</div><?php endif; ?>
     <form method="post" action="<?= e(purl($file, ['action' => 'save'] + ($action === 'edit' ? ['id' => $id] : []))) ?>"
-          class="card p-3 needs-validation" novalidate style="max-width:760px">
+          class="card form-card needs-validation" novalidate>
       <?= csrf_field() ?>
       <?php foreach ($m['fields'] as $f): $n = $f['name']; $inv = isset($errors[$n]) ? 'is-invalid' : ''; ?>
         <div class="mb-3">
@@ -1122,11 +1142,12 @@ function module_form(array $m, string $action, ?string $id, array $errors, array
           <?php elseif (!empty($f['hint'])): ?><div class="form-text"><?= e($f['hint']) ?></div><?php endif; ?>
         </div>
       <?php endforeach; ?>
-      <div class="d-flex gap-2">
+      <div class="form-actions">
         <button class="btn btn-success"><i class="bi bi-check-lg"></i> Save</button>
         <a class="btn btn-outline-secondary" href="<?= e($file) ?>">Cancel</a>
       </div>
     </form>
+    </div>
     <?php layout_end();
 }
 
@@ -1146,8 +1167,9 @@ function module_view(array $m, ?string $id): void
     }
 
     layout_start('View ' . $m['title']); ?>
-    <h3 class="mb-3">View &middot; <?= e($m['title']) ?> #<?= e($id) ?></h3>
-    <div class="card p-3" style="max-width:760px"><dl class="row mb-0">
+    <div class="form-shell">
+    <h3 class="form-title">View &middot; <?= e($m['title']) ?> #<?= e($id) ?></h3>
+    <div class="card form-card"><dl class="row mb-0">
       <?php foreach ($m['columns'] as $c): ?>
         <dt class="col-sm-4"><?= e($c[0]) ?></dt><dd class="col-sm-8"><?= !empty($c[3]) ? $c[2]($row) : e($c[2]($row)) ?></dd>
       <?php endforeach; ?>
@@ -1156,11 +1178,12 @@ function module_view(array $m, ?string $id): void
         <dt class="col-sm-4"><?= $lbl ?></dt><dd class="col-sm-8"><?= e($row[$k] ?? '—') ?></dd>
       <?php endforeach; ?>
     </dl></div>
-    <div class="mt-3 d-flex gap-2">
-      <?php if (can_edit()): ?>
+    <div class="form-actions mt-3">
+      <?php if (can_edit() && !($m['table'] === 'app_user' && !can_manage_user((int)($row['role_id'] ?? 0)))): ?>
         <a class="btn btn-success" href="<?= e(purl($file, ['action' => 'edit', 'id' => $id])) ?>"><i class="bi bi-pencil"></i> Edit</a>
       <?php endif; ?>
       <a class="btn btn-outline-secondary" href="<?= e($file) ?>">Back to list</a>
+    </div>
     </div>
     <?php layout_end();
 }
@@ -1188,6 +1211,11 @@ function module_list(array $m): void
         if ($v === '') continue;
         if ($f['type'] === 'text' && ($s = $clean($v)) !== '') $filters[$f['field']] = "ilike.*$s*";
         elseif ($f['type'] === 'select' && ctype_digit($v)) $filters[$f['field']] = "eq.$v";
+    }
+
+    $searching = $q !== '';
+    foreach ($m['filters'] as $f) {
+        if (trim((string)($_GET['f_' . $f['field']] ?? '')) !== '') { $searching = true; break; }
     }
 
     if ($m['table'] === 'app_user') {
@@ -1220,7 +1248,7 @@ function module_list(array $m): void
     <form class="card p-3 mb-3" method="get" action="<?= e($file) ?>">
       <div class="row g-2 align-items-end">
         <div class="col-md-4"><label class="form-label">Search</label>
-          <input name="q" class="form-control" placeholder="<?= e($m['searchHint'] ?? 'Search...') ?>" value="<?= e($q) ?>"></div>
+          <input name="q" class="form-control" placeholder="<?= e($m['searchHint'] ?? 'Search records...') ?>" value="<?= e($q) ?>"></div>
         <?php foreach ($m['filters'] as $f): $fv = $_GET['f_' . $f['field']] ?? ''; ?>
           <div class="col-md-3"><label class="form-label"><?= e($f['label']) ?></label>
             <?php if ($f['type'] === 'select'): ?>
@@ -1237,7 +1265,7 @@ function module_list(array $m): void
                   <option value="<?= $oid ?>" <?= (string)$fv === (string)$oid ? 'selected' : '' ?>><?= e($ol) ?></option>
                 <?php endforeach; ?>
               </select>
-            <?php else: ?><input name="f_<?= e($f['field']) ?>" class="form-control" value="<?= e($fv) ?>"><?php endif; ?></div>
+            <?php else: ?><input name="f_<?= e($f['field']) ?>" class="form-control" placeholder="Type to filter by <?= e(strtolower($f['label'])) ?>" value="<?= e($fv) ?>"><?php endif; ?></div>
         <?php endforeach; ?>
         <div class="col-auto d-flex gap-2">
           <button class="btn btn-success"><i class="bi bi-search"></i> Apply</button>
@@ -1247,6 +1275,16 @@ function module_list(array $m): void
     </form>
 
     <?php if ($loadErr): ?><div class="alert alert-danger"><?= e($loadErr) ?></div><?php endif; ?>
+    <?php if (!$loadErr && $searching && (int)$res['total'] === 0): ?>
+      <div class="alert alert-warning d-flex align-items-center gap-2" role="alert">
+        <i class="bi bi-exclamation-triangle-fill"></i>
+        <div>
+          <?php if ($q !== ''): ?>No match found for <strong>&ldquo;<?= e($q) ?>&rdquo;</strong><?= count(array_filter(array_map(fn($f) => trim((string)($_GET['f_' . $f['field']] ?? '')), $m['filters']))) ? ' with the selected filters' : '' ?>.
+          <?php else: ?>No match found for the selected filters.<?php endif; ?>
+          Check the spelling, try a different keyword, or <a href="<?= e($file) ?>" class="alert-link">reset the search</a>.
+        </div>
+      </div>
+    <?php endif; ?>
     <div class="card p-2">
     <div class="table-responsive"><table class="table table-striped table-hover align-middle mb-0">
       <thead><tr>
@@ -1259,16 +1297,20 @@ function module_list(array $m): void
         <th class="text-end">Actions</th>
       </tr></thead>
       <tbody>
-      <?php if (!$res['data']): ?><tr><td colspan="<?= count($m['columns']) + 1 ?>" class="text-center text-muted py-4">No records found.</td></tr><?php endif; ?>
+      <?php if (!$res['data']): ?><tr><td colspan="<?= count($m['columns']) + 1 ?>" class="text-center text-muted py-4"><?= $searching ? 'No match found.' : 'No records found.' ?></td></tr><?php endif; ?>
       <?php foreach ($res['data'] as $r): $rid = $r[$m['pk']]; ?>
         <tr>
           <?php foreach ($m['columns'] as $c): $cell = !empty($c[3]) ? $c[2]($r) : e($c[2]($r)); ?><td><?= trim((string)$cell) === '' ? '&mdash;' : $cell ?></td><?php endforeach; ?>
           <td class="text-end text-nowrap">
             <a class="btn btn-sm btn-outline-primary" title="View" href="<?= e(purl($file, ['action' => 'view', 'id' => $rid])) ?>"><i class="bi bi-eye"></i></a>
-            <?php if (can_edit()): ?>
+            <?php $locked = $m['table'] === 'app_user' && !can_manage_user((int)($r['role_id'] ?? 0)); ?>
+            <?php if ($locked): ?>
+              <span class="lock-note" title="Only the Super Admin can manage this account"><i class="bi bi-lock-fill"></i> Super Admin only</span>
+            <?php endif; ?>
+            <?php if (can_edit() && !$locked): ?>
               <a class="btn btn-sm btn-outline-success" title="Edit" href="<?= e(purl($file, ['action' => 'edit', 'id' => $rid])) ?>"><i class="bi bi-pencil"></i></a>
             <?php endif; ?>
-            <?php if (is_admin()): ?>
+            <?php if (is_admin() && !$locked): ?>
               <button type="button" class="btn btn-sm btn-outline-danger" title="Delete" data-bs-toggle="modal" data-bs-target="#delModal"
                       data-delete-id="<?= (int)$rid ?>" data-action="<?= e(purl($file, ['action' => 'delete'])) ?>"
                       data-label="<?= e($m['title'] . ' #' . $rid) ?>" data-warn="<?= e($m['cascadeWarn'] ?? '') ?>"><i class="bi bi-trash"></i></button>

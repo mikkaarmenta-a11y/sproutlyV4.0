@@ -633,3 +633,19 @@ a.stat-card:focus-visible { outline: 2px solid var(--t-ink); outline-offset: 2px
     print-color-adjust: exact;
   }
 }
+
+/* ---------- Centered add / edit / view pages ---------- */
+.form-shell { max-width: 760px; margin: 0 auto; }
+.form-shell-sm { max-width: 460px; }
+.form-title { text-align: center; margin: .25rem 0 1.1rem; font-weight: 600; color: var(--ink); }
+.form-card { padding: 1.5rem 1.5rem 1.35rem; }
+@media (max-width: 575.98px) { .form-card { padding: 1.1rem; } }
+.form-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: .6rem; margin-top: .5rem; }
+.form-shell .alert { text-align: center; }
+
+/* "Record created / updated" and other messages: centered banner */
+main > .alert { max-width: 640px; margin-left: auto; margin-right: auto; text-align: center; }
+
+/* accounts an Administrator may not manage */
+.lock-note { display: inline-flex; align-items: center; gap: .3rem; padding: .2rem .55rem; border-radius: 99px;
+  background: #f1ecfa; border: 1px solid #ddd2f1; color: #5b3f8f; font-size: .78rem; font-weight: 600; vertical-align: middle; }
